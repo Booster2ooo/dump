@@ -1,8 +1,8 @@
 (async () => {
-  const asFeature = station => ({
-    type: "Feature",
+  const asGeoJsonFeature = station => ({
+    type: 'Feature',
     geometry: {
-      type: "Point",
+      type: 'Point',
       coordinates: [parseFloat(station.lng), parseFloat(station.lat)]
     },
     properties: {
@@ -11,7 +11,7 @@
     }
   });
 
-  const getExtension = (partner) => {
+  const getLogoFileExtension = (partner) => {
     switch (partner) {
       case 'co-op':
       case 'evf':
@@ -34,6 +34,7 @@
     }
   }
 
+  const clusterZoomLevel = 11;
   const svgMime = 'image/svg+xml';
   const markerUrl = 'https://raw.githubusercontent.com/Booster2ooo/dump/main/yellow_marker2.svg';
   const markerSrc = await fetch(markerUrl)
@@ -49,12 +50,13 @@
     //const markerUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent('https://www.networkfleetapp.com/assets/images/yellow_marker2.svg')}`;
     //const logoUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://www.networkfleetapp.com/assets/images/${partner}_square.svg`)}`;
     //const markerUrl = 'https://raw.githubusercontent.com/Booster2ooo/dump/main/yellow_marker2.svg';
-    const logoUrl = `https://raw.githubusercontent.com/Booster2ooo/dump/main/${partner}.${getExtension(partner)}`;
+    const logoFileExtension = getLogoFileExtension(partner);
+    const logoUrl = `https://raw.githubusercontent.com/Booster2ooo/dump/main/${partner}.${logoFileExtension}`;
     //const svgMime = 'image/svg+xml';
     const canvas = document.createElement('canvas');
     canvas.width = 35;
     canvas.height = 48;
-    const context = canvas.getContext("2d");
+    const context = canvas.getContext('2d');
     const markerImg = new Image(35, 48);
     const logoImg = new Image(20, 20);
     const markerLoaded = new Promise((resolve, reject) => {
@@ -71,9 +73,9 @@
     });
     markerImg.src = markerSrc;
     try {
-      return Promise.resolve()
+      return markerLoaded
         .then(() => {
-          if (getExtension(partner) === 'svg') {
+          if (logoFileExtension === 'svg') {
             return fetch(logoUrl)
               .then(resp => resp.text())
               .then(svgSrc => {
@@ -98,7 +100,9 @@
               });
           }
         })
-        .then(() => Promise.all([markerLoaded, logoLoaded]).then(() => canvas.toDataURL()));
+        .then(() => logoLoaded)
+        .then(() => canvas.toDataURL())
+        ;
     }
     catch (ex) {
       return Promise.reject(ex);
@@ -116,7 +120,8 @@
 
   const mapLoaded = new Promise((resolve, reject) => map.on('load', resolve));
 
-  const collections = await fetch("https://raw.githubusercontent.com/Booster2ooo/dump/main/stations.json")
+  // used for clusters
+  const stationsCollection = await fetch('https://raw.githubusercontent.com/Booster2ooo/dump/main/stations.json')
     .then(res => res.json())
     .then(stations => stations
       .reduce((acc, station) => {
@@ -127,19 +132,55 @@
           //console.log(station);
           return acc;
         }
-        const feat = asFeature(station);
-        acc[feat.properties.partner] = acc[feat.properties.partner] || {
-          type: 'FeatureCollection',
-          features: []
-        };
-        acc[feat.properties.partner].features.push(feat);
+        const feature = asGeoJsonFeature(station);
+        acc.features.push(feature);
         return acc;
-      }, {})
-    );
+      }, { type: 'FeatureCollection', features: [] })    
+  );
+
+  // used to build custom marker per partner
+  const perPartnerCollections = stationsCollection.features
+    .reduce((acc, feature) => {
+      acc[feature.properties.partner] = acc[feature.properties.partner] || {
+        type: 'FeatureCollection',
+        features: []
+      };
+      acc[feature.properties.partner].features.push(feature);
+      return acc;
+    }, {});
 
   await mapLoaded;
 
-  for (const [partner, data] of Object.entries(collections)) {
+  map.addSource('stations', {
+    type: 'geojson',
+    data: stationsCollection,
+    cluster: true,
+    clusterMaxZoom: clusterZoomLevel
+  });
+  map.addLayer({
+    id: 'stations_clusters',
+    type: 'circle',
+    source: 'stations',
+    filter: ['has', 'point_count'],
+    paint: {
+      'circle-color': '#fedf32',
+      'circle-radius': ['step', ['get', 'point_count'], 30, 100, 30, 200, 30, 300, 30, 750, 30]
+    }
+  });
+  map.addLayer({
+		id: 'stations_count',
+		type: 'symbol',
+		source: 'stations',
+		filter: ['has', 'point_count'],
+		layout: {
+			'text-field': ['get', 'point_count_abbreviated'],
+			'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Bold'],
+			'text-size': 18
+		},
+		paint: {'text-color': '#ED1C24'}
+	});
+
+  for (const [partner, data] of Object.entries(perPartnerCollections)) {
     const logo = await createPartnerLogo(partner);
     map.loadImage(
       logo,
@@ -154,13 +195,13 @@
           id: partner + '_layer',
           type: 'symbol',
           source: partner + '_source',
+          filter: ['>', ['zoom'], clusterZoomLevel],
           layout: {
             'icon-image': partner + '_image',
-            'icon-size': 1
+            'icon-allow-overlap': true
           }
         });
       }
     );
   }
 })();
-
